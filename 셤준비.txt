@@ -1,0 +1,125 @@
+- AVD(Android Virtual Device)
+
+- adb(android debug bridge)
+copying files to/from device
+installing and debugging apps
+running shell commands
+
+- System call interface
+kernel 내부의 기능을 사용하고 싶은 경우 kernel 내부의 함수를 직접적으로 호출할 수 없다.
+user에서 system call 호출시 trap을 통해 kernel 내부로 넘어간다.
+kernel은 유저가 호출한 system call을 kernel에 등록되어 있는 system call 목록에서
+확인하여 그에 맞는 system call handler를 사용한다.
+
+- goldfish_segment.c
+static int goldfish_segment_probe(struct platform_device *pdev)
+-> segmetn device를 probe
+static int goldfish_segment_remove(struct platform_device *pdev)
+-> segment device를 remove
+
+#define GOLDFISH_SEGMENT_READ(data, addr) \
+(readl(data->reg_base + addr))
+#define GOLDFISH_SEGMENT_WRITE(data, addr, x) \
+(writel(x, data->reg_base +addr))
+
+GOLDFISH_SEGMENT_WRITE(data, SEGMENT0, 0x24);
+
+- Memory Mapped I/O Port Mapped I/O
+CPU와 device사이에서 입출력을 하는 2가지의 상호보완적인 방법
+1. Memory Mapped I/O: 입출력장치 접근을 위해 메모리와 같은 주소버스를 이용한다.
+* device와 memory가 same address space를 공유한다.
+* memory load/store명령을 사용한다. (special command x)
+2. Port Mapped I/O: 입출력 장치 접근을 위해 별도의 하드웨어와 별도의 CPU명령을 사용한다.
+* address space가 분리되어 있다.
+* special한 memory command가 있다. (IN/OUT)
+
+- Two Importance
+base(physical) address, devices size.
+
+- Memory Region Allocation API
+1. struct resource *request_mem_region(unsigned long start, unsigned long len, char *name)
+다른 device를 붙일 때 메모리 영역이 겹치는 것을 막기 위해 해당 영역을 사용하고 있다는 표시를 한다.
+2. void release_mem_region(unsigned long start, unsigned long len)
+그 영역을 풀어주는 함수이다.
+3. int check_mem_region(unsigned long start, unsigned long len)
+해당 영역을 확인할 수 있는지 체크해주는 함수
+
+ex)
+if(request_mem_region(r->start, resource_size(r), "7segment")==NULL){
+	printk(KERN_INFO "register 7 segment fail\n");
+	return -EBUSY;
+}
+misc_register(&segment_dev);
+
+- static const struct file_operations segment_fops -> 다양한 동작들을 제공
+
+- segment_read(goldfish_segment.c)
+char kbuf[8];
+for(i=0;i<8;i++)	GOLDFISH_SEGMENT_READ(seg_data, 4*i);
+copy_to_user(buf,kbuf,sizeof(kbuf));
+return sizeof(kbuf);
+
+- segment_write(goldfish_segment.c)
+char kbuf[8];
+copy_from_user(kbuf,buf,sizeof(kbuf));
+for(i=0;i<8;i++)	GOLDFISH_SEGMENT_WRITE(seg_data,4*i,kbuf[i]);
+return sizeof(kbuf);
+
+- int remap_pfn_range(struct vm_area_struct *vma, unsigned long addr, unsigned long pfn, unsigned long size, pgprot_t prot)
+user에서 mmap을 호출하게 되면 등록해둔 파일 오퍼레이션에 따라 segment mmap함수가 불리게 된다.
+remap_pfn_range함수를 통해 특정영역의 kernel memory를 user space의 vma영역과 매핑시키는 vmap과정이 진행된다.
+
+- I/O via ioctl(system call을 통해 동작하는 형태)
+user와 device의 공통커맨드를 바탕으로 user가 원하는 동작을 device에 요청하는 형식이다.
+
+- goldfish_iodev_init;
+struct goldfish_iodev_state *s;
+s = (struct goldfish_iodev_state *)g_malloc0(sizeof(*s));
+s->dev.name="goldfish_iodev";
+...
+s->dev.irq_count = 1;
+s->dev.irq = 15;
+s->iodev_fd = open("./iodev.disk", O_RDWR);
+
+- iodev user code
+fd = open("/dev/iodev", O_RDWR | O_NDELAY);
+lseek(fd, 0, SEEK_SET);
+ret = read(fd, buf, 4096);
+printf("DATA: %c\n", buf[100]);
+
+for(i=0;i<4096;i++)	buf[i] = 'b';
+ret = write(fd, buf, 4096);
+printf("ret: %d\n", ret);
+close(fd);
+
+- goldfish iodev write
+lpn = (uint32_t)(*loff>>PAGE_SIZE);
+copy_from_user((char *)kbuf, buf, size);
+while(readl(data->reg_base+STATUS_REG!=DEV_READY);
+spin_lock_irq(&wait_q_lock);
+condition = 0;
+writel(lpn, data->reg_base+LBA_REG);
+for(i=0;i<PAGE_SIZE/sizeof(uint32_t);i++)
+	writel(kbuf[i], data->reg_base+BUF_REG);
+writel(WRITE_CMD, data->reg_base+CMD_REG);
+wait_event_lock_irq(wait_q, condition, wait_q_lock);
+spin_unlock_irq(&wait_q_lock);
+(*loff) += size;
+
+- goldfish iodev read
+lpn = (uint32_t)(*loff>>PAGE_SIZE);
+while(readl(data->reg_base+STATUS_REG!=DEV_READY);
+spin_lock_irq(&wait_q_lock);
+condition = 0;
+writel(READ_CMD, data->reg_base+CMD_REG);
+wait_event_lock_irq(wait_q, condition, wait_q_lock);
+spin_unlock_irq(&wait_q_lock);
+for(i=0;i<PAGE_SIZE/sizeof(uint32_t);i++)
+	kbuf[i] = readl(data->reg_base+BUF_REG);
+copy_to_user(buf, (char *)kbuf, size);
+
+
+
+
+
+
